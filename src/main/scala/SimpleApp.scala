@@ -1,21 +1,13 @@
 package org.example
 
-import _root_.io.confluent.kafka.serializers.KafkaAvroDeserializer
-import org.apache.avro.generic.GenericRecord
-import org.apache.kafka.common.serialization.StringDeserializer
-import org.apache.spark
+import org.apache.avro.Schema
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.SparkSession._
-import org.apache.spark.streaming._
-import org.apache.spark.streaming.StreamingContext._
-import org.apache.spark.streaming.kafka010.ConsumerStrategies.Subscribe
-import org.apache.spark.streaming.kafka010.LocationStrategies.PreferConsistent
-import org.apache.spark.streaming.kafka010._
+import org.apache.spark.sql.{SparkSession, _}
 import org.apache.spark.sql.avro._
-import org.apache.spark.sql._
-import org.apache.spark.sql.catalyst.expressions.GenericRowWithSchema
-import org.apache.spark.sql.types.StructType
+import org.example.RegistrySchemaProtocol._
+import spray.json._
+
+import scala.collection.mutable.ListBuffer
 
 
 object SimpleApp extends App {
@@ -23,51 +15,54 @@ object SimpleApp extends App {
     val conf = new SparkConf()
       .setMaster("local[*]")
       .setAppName("DeDemo")
-    val streamingContext = new StreamingContext(conf, Seconds(3))
-    val kafkaParams = Map[String, Object](
-      "bootstrap.servers" -> "localhost:9092",
-      "value.deserializer" -> classOf[KafkaAvroDeserializer],
-      "key.deserializer" -> classOf[StringDeserializer],
-      "group.id" -> "pageviews-consumer-group",
-      "auto.offset.reset" -> "latest",
-      "enable.auto.commit" -> (false: java.lang.Boolean),
-      "schema.registry.url" -> "http://localhost:8081"
+
+    val sparkSession = SparkSession.builder.config(conf).getOrCreate()
+
+    import sparkSession.implicits._
+
+    val kafkaParams = Map[String, String](
+      "kafka.bootstrap.servers" -> "localhost:9092",
+      "schema.registry.url" -> "http://localhost:8081",
+      "subscribe" -> "pageviews"
     )
 
-    val topics = Array("pageviews")
+    val schemaStringAsJson = requests.get("http://localhost:8081/subjects/pageviews-value/versions/1").text
+      .parseJson
 
-    val stream = KafkaUtils.createDirectStream[String, GenericRecord](
-      streamingContext,
-      PreferConsistent,
-      Subscribe[String, GenericRecord](topics, kafkaParams)
-    )
+    val schemaFromRegistry = schemaStringAsJson.convertTo[RegistrySchema]
+    val schema = new Schema.Parser().parse(schemaFromRegistry.schema)
 
-    stream.map(record => record.value()).foreachRDD(rdd => {
-      val rowRDD = rdd.map(gr => {
-        val structType = SchemaConverters.toSqlType(gr.getSchema)
-        genericRecordToRow(gr, structType)
-      })
+    val baseline = sparkSession
+      .readStream
+      .format("kafka")
+      .options(kafkaParams)
+      .load
 
-      val spark = SparkSession.builder().config(rdd.sparkContext.getConf).getOrCreate()
+    var fieldList = new ListBuffer[String]
 
-      import spark.sqlContext.implicits._
-
-      val df = spark.createDataFrame(rowRDD, test)
-
-    })
-
-    streamingContext.start
-    streamingContext.awaitTermination
-  }
-
-  def genericRecordToRow(record: GenericRecord, sqlType : SchemaConverters.SchemaType): Row = {
-    val objectArray = new Array[Any](record.asInstanceOf[GenericRecord].getSchema.getFields.size)
     import scala.collection.JavaConversions._
-    for (field <- record.getSchema.getFields) {
-      objectArray(field.pos) = record.get(field.pos)
+    for (field <- schema.getFields) {
+      val newItem = field.name
+      fieldList += "value." + newItem
+      println(newItem)
     }
 
-    new GenericRowWithSchema(objectArray, sqlType.dataType.asInstanceOf[StructType])
+    val columns = fieldList.map(name => new Column(name)).toList
+
+    val messagesDF = baseline.withColumn("value", from_avro($"value", schemaFromRegistry.schema))
+      .select(columns: _*)
+
+    messagesDF.printSchema
+
+    val q = messagesDF
+      .groupBy("userid")
+      .count
+      .writeStream
+      .queryName("Test groupBy")
+      .outputMode("update")
+      .format("console")
+      .start
+
+    q.awaitTermination
   }
 }
-
