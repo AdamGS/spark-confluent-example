@@ -20,12 +20,6 @@ object SimpleApp extends App {
 
     import sparkSession.implicits._
 
-//    val kafkaParams = Map[String, String](
-//      "kafka.bootstrap.servers" -> "localhost:9092",
-//      "schema.registry.url" -> "http://localhost:8081",
-//      "subscribe" -> "pageviews"
-//    )
-
     val schemaStringAsJson = requests.get("http://localhost:8081/subjects/pageviews-value/versions/1").text
       .parseJson
 
@@ -54,8 +48,7 @@ object SimpleApp extends App {
     println("Schema: " + avroSchema)
 
     val v = baseline
-      //.selectExpr("CAST(key AS STRING)", "CAST(value AS BINARY)")
-      //.select($"value")
+      .selectExpr("CAST(key AS STRING)", "CAST(value AS BINARY)")
       .select(from_avro($"value", avroSchema.toString) as 'avro)
       .select(columns: _*)
 
