@@ -6,59 +6,65 @@ import org.apache.spark.sql.{SparkSession, _}
 import org.apache.spark.sql.avro._
 import org.example.RegistrySchemaProtocol._
 import spray.json._
+import _root_.io.confluent.kafka.serializers.KafkaAvroDeserializer
 
 import scala.collection.mutable.ListBuffer
-
 
 object SimpleApp extends App {
   override def main(args: Array[String]) {
     val conf = new SparkConf()
       .setMaster("local[*]")
-      .setAppName("DeDemo")
+      .setAppName("SimpleApp")
 
     val sparkSession = SparkSession.builder.config(conf).getOrCreate()
 
     import sparkSession.implicits._
 
-    val kafkaParams = Map[String, String](
-      "kafka.bootstrap.servers" -> "localhost:9092",
-      "schema.registry.url" -> "http://localhost:8081",
-      "subscribe" -> "pageviews"
-    )
+//    val kafkaParams = Map[String, String](
+//      "kafka.bootstrap.servers" -> "localhost:9092",
+//      "schema.registry.url" -> "http://localhost:8081",
+//      "subscribe" -> "pageviews"
+//    )
 
     val schemaStringAsJson = requests.get("http://localhost:8081/subjects/pageviews-value/versions/1").text
       .parseJson
 
+
     val schemaFromRegistry = schemaStringAsJson.convertTo[RegistrySchema]
-    val schema = new Schema.Parser().parse(schemaFromRegistry.schema)
+    val avroSchema = new Schema.Parser().parse(schemaFromRegistry.schema)
 
     val baseline = sparkSession
       .readStream
       .format("kafka")
-      .options(kafkaParams)
+      .option("subscribe", "pageviews")
+      .option("kafka.bootstrap.servers", "localhost:9092")
       .load
 
     var fieldList = new ListBuffer[String]
 
     import scala.collection.JavaConversions._
-    for (field <- schema.getFields) {
-      val newItem = field.name
-      fieldList += "value." + newItem
-      println(newItem)
+    for (field <- avroSchema.getFields) {
+      fieldList += "avro." + field.name
     }
 
     val columns = fieldList.map(name => new Column(name)).toList
 
-    val messagesDF = baseline.withColumn("value", from_avro($"value", schemaFromRegistry.schema))
+    baseline.printSchema
+
+    println("Schema: " + avroSchema)
+
+    val v = baseline
+      //.selectExpr("CAST(key AS STRING)", "CAST(value AS BINARY)")
+      //.select($"value")
+      .select(from_avro($"value", avroSchema.toString) as 'avro)
       .select(columns: _*)
 
-    messagesDF.printSchema
+    v.printSchema
 
-    val q = messagesDF
-      .groupBy("userid")
-      .count
+
+    val q = v
       .writeStream
-      .queryName("Test groupBy")
+      .queryName("Avro SerDe Test")
       .outputMode("update")
       .format("console")
       .start
