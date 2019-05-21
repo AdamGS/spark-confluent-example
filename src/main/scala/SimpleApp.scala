@@ -12,10 +12,10 @@ import org.apache.spark.streaming.StreamingContext._
 import org.apache.spark.streaming.kafka010.ConsumerStrategies.Subscribe
 import org.apache.spark.streaming.kafka010.LocationStrategies.PreferConsistent
 import org.apache.spark.streaming.kafka010._
-import org.apache.spark.sql.avro._
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.expressions.GenericRowWithSchema
 import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.avro._
 
 
 object SimpleApp extends App {
@@ -42,19 +42,28 @@ object SimpleApp extends App {
       Subscribe[String, GenericRecord](topics, kafkaParams)
     )
 
-    stream.map(record => record.value()).foreachRDD(rdd => {
-      val rowRDD = rdd.map(gr => {
-        val structType = SchemaConverters.toSqlType(gr.getSchema)
-        genericRecordToRow(gr, structType)
+    val values = stream.map(record => record.value())
+
+//    val s = values.map(gr => {
+//      println(gr.toString)
+//      val structType = SchemaConverters.toSqlType(gr.getSchema)
+//      genericRecordToRow(gr, structType)
+//    }).count().foreachRDD(r => {
+//      r.foreach(println)
+//    })
+
+    values.foreachRDD(rdd => {
+      rdd.foreach(gr => {
+        println(gr.toString)
       })
-
-      val spark = SparkSession.builder().config(rdd.sparkContext.getConf).getOrCreate()
-
-      import spark.sqlContext.implicits._
-
-      val df = spark.createDataFrame(rowRDD, test)
-
     })
+
+    values.print()
+
+
+//    val spark = SparkSession.builder().config(stream.context.sparkContext.getConf).getOrCreate()
+//
+//    import spark.implicits._
 
     streamingContext.start
     streamingContext.awaitTermination
