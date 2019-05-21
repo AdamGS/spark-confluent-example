@@ -6,7 +6,6 @@ import org.apache.spark.sql.{SparkSession, _}
 import org.apache.spark.sql.avro._
 import org.example.RegistrySchemaProtocol._
 import spray.json._
-import _root_.io.confluent.kafka.serializers.KafkaAvroDeserializer
 
 import scala.collection.mutable.ListBuffer
 
@@ -20,12 +19,15 @@ object SimpleApp extends App {
 
     import sparkSession.implicits._
 
-    val schemaStringAsJson = requests.get("http://localhost:8081/subjects/pageviews-value/versions/1").text
-      .parseJson
+    val schemaStringAsJson = requests.get("http://localhost:8081/subjects/pageviews-value/versions/latest").text.parseJson
+
+    val directURLSchema = requests.get("http://localhost:8081/subjects/pageviews-value/versions/latest/schema")
+    println("New! " + directURLSchema)
+
 
 
     val schemaFromRegistry = schemaStringAsJson.convertTo[RegistrySchema]
-    val avroSchema = new Schema.Parser().parse(schemaFromRegistry.schema)
+    val avroSchema = new Schema.Parser().parse(directURLSchema.text)
 
     val baseline = sparkSession
       .readStream
@@ -36,21 +38,15 @@ object SimpleApp extends App {
 
     var fieldList = new ListBuffer[String]
 
-    import scala.collection.JavaConversions._
-    for (field <- avroSchema.getFields) {
-      fieldList += "avro." + field.name
-    }
-
     val columns = fieldList.map(name => new Column(name)).toList
 
     baseline.printSchema
-
-    println("Schema: " + avroSchema)
+    println("Schema: " + avroSchema.toString)
 
     val v = baseline
-      .selectExpr("CAST(key AS STRING)", "CAST(value AS BINARY)")
-      .select(from_avro($"value", avroSchema.toString) as 'avro)
-      .select(columns: _*)
+      .selectExpr("CAST(key AS STRING)", "value")
+      .select($"key", $"value", from_avro($"value", avroSchema.toString) as 'pageviews)
+      .select($"key", $"value"cast("STRING"), $"pageviews.*")
 
     v.printSchema
 
